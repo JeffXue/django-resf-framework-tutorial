@@ -37,7 +37,19 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'quickstart',
+    'rest_framework',
 ]
+
+# rest framework配置
+REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': [
+        # 限制只能由管理员使用
+        'rest_framework.permissions.IsAdminUser',
+    ],
+    # 打开分页
+    'PAGE_SIZE': 10
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
