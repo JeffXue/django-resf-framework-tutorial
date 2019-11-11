@@ -129,6 +129,209 @@ REST_FRAMEWORK = {
 
 
 ## serialization：序列化
+本教程将介绍如何创建一个简单的收录代码高亮展示的Web API。这个过程中, 将会介绍组成Rest框架的各个组件，并让你全面了解各个组件是如何一起工作的。
+- 使用models.Model实现model类
+- 使用serializers.ModelSerializer实现序列化类
+- 使用序列化类编写常规views
+
+### 新建snippet应用
+```shell
+python manage.py startapp snippets
+```
+
+添加app应用
+```
+INSTALLED_APPS = (
+    ...
+    'snippets',
+)
+```
+
+### 创建model
+
+```python
+from django.db import models
+from pygments.lexers import get_all_lexers
+from pygments.styles import get_all_styles
+
+LEXERS = [item for item in get_all_lexers() if item[1]]
+LANGUAGE_CHOICES = sorted([(item[1][0], item[0]) for item in LEXERS])
+STYLE_CHOICES = sorted((item, item) for item in get_all_styles())
+
+
+class Snippet(models.Model):
+    created = models.DateTimeField(auto_now_add=True)
+    title = models.CharField(max_length=100, blank=True, default='')
+    code = models.TextField()
+    linenos = models.BooleanField(default=False)
+    language = models.CharField(choices=LANGUAGE_CHOICES, default='python', max_length=100)
+    style = models.CharField(choices=STYLE_CHOICES, default='friendly', max_length=100)
+
+    class Meta:
+        ordering = ('created',)
+```
+
+
+```shell
+python manage.py makemigrations snippets
+python manage.py migrate
+```
+
+## 创建序列化类
+
+为web api提供一种代码片段实例序列化和反序列化为`json`之类的表示形式的方式
+在`snippets`目录下创建一个名为`serializers.py`
+
+```python
+from rest_framework import serializers
+from snippets.models import Snippet, LANGUAGE_CHOICES, STYLE_CHOICES
+
+
+class SnippetSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    code = serializers.CharField(style={'base_template': 'textarea.html'})
+    linenos = serializers.BooleanField(required=False)
+    language = serializers.ChoiceField(choices=LANGUAGE_CHOICES, default='python')
+    style = serializers.ChoiceField(choices=STYLE_CHOICES, default='friendly')
+
+    def create(self, validated_data):
+        """
+        根据提供的验证过的数据创建并返回一个新的`Snippet`实例。
+        """
+        return Snippet.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        """
+        根据提供的验证过的数据更新和返回一个已经存在的`Snippet`实例。
+        """
+        instance.title = validated_data.get('title', instance.title)
+        instance.code = validated_data.get('code', instance.code)
+        instance.linenos = validated_data.get('linenos', instance.linenos)
+        instance.language = validated_data.get('language', instance.language)
+        instance.style = validated_data.get('style', instance.style)
+        instance.save()
+        return instance
+```
+
+
+### 使用ModelSerializers
+
+SnippetSerializer类中重复了很多包含在Snippet模型类（model）中的信息。如果能保证我们的代码整洁，那就更好了。
+就像Django提供了Form类和ModelForm类一样，REST framework包括Serializer类和ModelSerializer类，
+使用ModelSerializer类重构我们的序列化类
+
+```python
+class SnippetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Snippet
+        fields = ('id', 'title', 'code', 'linenos', 'language', 'style')
+
+# 序列一个非常棒的属性就是可以通过打印序列化器类实例的结构(representation)查看它的所有字段。
+from snippets.serializers import SnippetSerializer
+serializer = SnippetSerializer()
+print(repr(serializer))
+# SnippetSerializer():
+#    id = IntegerField(label='ID', read_only=True)
+#    title = CharField(allow_blank=True, max_length=100, required=False)
+#    code = CharField(style={'base_template': 'textarea.html'})
+#    linenos = BooleanField(required=False)
+#    language = ChoiceField(choices=[('Clipper', 'FoxPro'), ('Cucumber', 'Gherkin'), ('RobotFramework', 'RobotFramework'), ('abap', 'ABAP'), ('ada', 'Ada')...
+#    style = ChoiceField(choices=[('autumn', 'autumn'), ('borland', 'borland'), ('bw', 'bw'), ('colorful', 'colorful')...
+```
+
+ModelSerializer类并不会做任何特别神奇的事情，它们只是创建序列化器类的快捷方式：
+- 一组自动确定的字段。
+- 默认简单实现的create()和update()方法。
+
+### 使用序列化实现views
+目标不会使用任何REST框架的其他功能，只需将视图作为常规django视图编写,`snippets/views.py`
+```python
+from django.http import HttpResponse
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.renderers import JSONRenderer
+from rest_framework.parsers import JSONParser
+from snippets.models import Snippet
+from snippets.serializers import SnippetSerializer
+
+class JSONResponse(HttpResponse):
+    """
+    An HttpResponse that renders its content into JSON.
+    """
+    def __init__(self, data, **kwargs):
+        content = JSONRenderer().render(data)
+        kwargs['content_type'] = 'application/json'
+        super(JSONResponse, self).__init__(content, **kwargs)
+
+
+@csrf_exempt
+def snippet_list(request):
+    """
+    列出所有的code snippet，或创建一个新的snippet。
+    """
+    if request.method == 'GET':
+        snippets = Snippet.objects.all()
+        serializer = SnippetSerializer(snippets, many=True)
+        return JSONResponse(serializer.data)
+
+    elif request.method == 'POST':
+        data = JSONParser().parse(request)
+        serializer = SnippetSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return JSONResponse(serializer.data, status=201)
+        return JSONResponse(serializer.errors, status=400)
+
+
+@csrf_exempt
+def snippet_detail(request, pk):
+    """
+    获取，更新或删除一个 code snippet。
+    """
+    try:
+        snippet = Snippet.objects.get(pk=pk)
+    except Snippet.DoesNotExist:
+        return HttpResponse(status=404)
+
+    if request.method == 'GET':
+        serializer = SnippetSerializer(snippet)
+        return JSONResponse(serializer.data)
+
+    elif request.method == 'PUT':
+        data = JSONParser().parse(request)
+        serializer = SnippetSerializer(snippet, data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return JSONResponse(serializer.data)
+        return JSONResponse(serializer.errors, status=400)
+
+    elif request.method == 'DELETE':
+        snippet.delete()
+        return HttpResponse(status=204)
+
+```
+
+### 添加URL
+`snippets/urls.py`
+```python
+from snippets import views
+
+urlpatterns = [
+    url(r'^/$', views.snippet_list),
+    url(r'^/(?P<pk>[0-9]+)/$', views.snippet_detail),
+]
+```
+
+`tutorial/urls.py`
+```python
+from django.conf.urls import url, include
+
+urlpatterns = [
+    url(r'^', include('snippets.urls')),
+]
+```
+
+到目前为止做得不错，我们有一个与Django的Forms API非常相似序列化API，和一些常规的Django视图
 
 ---
 
