@@ -1,7 +1,6 @@
 # 学习纪要
 本仓库及纪要主要用来快速熟悉如何在django上使用REST framework
 
-[TOC]
 
 ---
 
