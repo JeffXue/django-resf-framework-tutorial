@@ -604,6 +604,160 @@ class SnippetDetail(generics.RetrieveUpdateDestroyAPIView):
 
 ## authentication and permissions：认证和权限
 
+本章节主要讲解的内容是：
+- model添加关联外键：`owner`
+- 更新序列化器：`owner`，指定source参数控制属性填充字段`owner.username`
+- 将视图类和用户关联： 修改实例保存的方法`perform_create`，传入请求URL中隐含信息`self.request.user`
+- 添加视图权限： `permission_classes`
+- 自定义权限，添加自定义权限控制
+
+目前，我们的API对谁可以编辑或删除代码段没有任何限制。我们希望有更高级的行为，以确保：
+- 代码片段始终与创建者相关联。
+- 只有通过身份验证的用户可以创建片段。
+- 只有代码片段的创建者可以更新或删除它。
+- 未经身份验证的请求应具有完全只读访问权限
+
+### model添加信息关联信息
+`snippet model`
+```python
+# owner为外键
+owner = models.ForeignKey('auth.User', related_name='snippets', on_delete=models.CASCADE)
+highlighted = models.TextField()
+
+
+from pygments.lexers import get_lexer_by_name
+from pygments.formatters.html import HtmlFormatter
+from pygments import highlight
+
+def save(self, *args, **kwargs):
+    """
+    使用`pygments`库创建一个高亮显示的HTML表示代码段。
+    """
+    lexer = get_lexer_by_name(self.language)
+    linenos = self.linenos and 'table' or False
+    options = self.title and {'title': self.title} or {}
+    formatter = HtmlFormatter(style=self.style, linenos=linenos,
+                              full=True, **options)
+    self.highlighted = highlight(self.code, lexer, formatter)
+    super(Snippet, self).save(*args, **kwargs)
+
+```
+
+### 添加用户序列化类及视图
+`serializers.py`
+```python
+from django.contrib.auth.models import User
+
+class UserSerializer(serializers.ModelSerializer):
+    snippets = serializers.PrimaryKeyRelatedField(many=True, queryset=Snippet.objects.all())
+
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'snippets')
+```
+
+
+`view.py`
+```python
+from django.contrib.auth.models import User
+
+
+class UserList(generics.ListAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+
+
+class UserDetail(generics.RetrieveAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+
+```
+
+### 将snippet和用户关联
+
+如果我们创建了一个代码片段，并不能将创建该代码片段的用户与代码段实例相关联。用户不是作为序列化表示的一部分发送的，而是作为传入请求的属性
+
+我们处理的方式是在我们的代码片段视图中重写一个.perform_create()方法，这样我们可以修改实例保存的方法，并处理传入请求或请求URL中隐含的任何信息。
+
+`views.py`
+```python
+def perform_create(self, serializer):
+    serializer.save(owner=self.request.user)
+```
+
+序列化器的create()方法现在将被传递一个附加的'owner'字段以及来自请求的验证数据
+
+### 更新snippet序列化器
+`serializers.py`
+```python
+owner = serializers.ReadOnlyField(source='owner.username')
+```
+
+`source`参数控制哪个属性用于填充字段，并且可以指向序列化实例上的任何属性。它也可以采用如上所示点加下划线的方式，在这种情况下，它将以与Django模板语言一起使用的相似方式遍历给定的属性。
+
+我们添加的字段是无类型的`ReadOnlyField`类，区别于其他类型的字段（如`CharField`，`BooleanField`等）。无类型的`ReadOnlyField`始终是只读的，只能用于序列化表示，不能用于在反序列化时更新模型实例。我们也可以在这里使用`CharField(read_only=True)``
+
+### 添加视图所需权限
+
+REST框架包括许多权限类，我们可以使用这些权限类来限制谁可以访问给定的视图。 在这种情况下，我们需要的是IsAuthenticatedOrReadOnly类，这将确保经过身份验证的请求获得读写访问权限，未经身份验证的请求将获得只读访问权限
+`views.py`
+```
+from rest_framework import permissions
+
+将以下属性添加到SnippetList和SnippetDetail视图类中
+permission_classes = (permissions.IsAuthenticatedOrReadOnly,)
+
+```
+
+### 对象级别的权限
+
+创建一个自定义权限，创建`permissions.py`
+```python
+from rest_framework import permissions
+
+
+class IsOwnerOrReadOnly(permissions.BasePermission):
+    """
+    自定义权限只允许对象的所有者编辑它。
+    """
+
+    def has_object_permission(self, request, view, obj):
+        # 读取权限允许任何请求，
+        # 所以我们总是允许GET，HEAD或OPTIONS请求。
+        if request.method in permissions.SAFE_METHODS:
+            return True
+
+        # 只有该snippet的所有者才允许写权限。
+        return obj.owner == request.user
+```
+
+添加自定义权限属性
+```python
+permission_classes = (permissions.IsAuthenticatedOrReadOnly,
+                      IsOwnerOrReadOnly,)
+```
+
+
+### 使用API进行身份验证
+现在因为我们在API上有一组权限，如果我们要编辑任何代码片段，我们都需要验证我们的请求。我们还没有设置任何身份验证类，所以应用的是默认的SessionAuthentication和BasicAuthentication。
+当我们通过Web浏览器与API进行交互时，我们可以登录，然后浏览器会话将为请求提供所需的身份验证。
+如果我们在代码中与API交互，我们需要在每次请求上显式提供身份验证凭据
+
+```shell
+http -a tom:password123 POST http://127.0.0.1:8000/snippets/ code="print 789"
+
+{
+    "id": 5,
+    "owner": "tom",
+    "title": "foo",
+    "code": "print 789",
+    "linenos": false,
+    "language": "python",
+    "style": "friendly"
+}
+```
+
+
 ---
 
 ## relationships and hyperlinked apis：关联与超链接API
