@@ -892,6 +892,11 @@ urlpatterns += [
 
 ## viewsets and routers：视图集和路由器
 
+本章节主要讲解：
+- 使用viewset重构之前的views
+- 使用路由器配置url
+
+
 REST框架包括一个用于处理`ViewSets`的抽象，它允许开发人员集中精力对API的状态和交互进行建模，并根据常规约定自动处理URL构造。
 
 `ViewSet`类与`View`类几乎相同，不同之处在于它们提供诸如`read`或`update`之类的操作，而不是`get`或`put`等方法处理程序。
@@ -1016,5 +1021,39 @@ urlpatterns = [
 ---
 
 ## schemas and client libraries：概要和客户端库
+
+概要是一种机器可读文档，用于描述可用的API路径，其URLS以及它们支持的操作。
+
+概要可以是自动生成文档的有用工具，也可以用于驱动可以与API进行交互的动态客户端库。
+
+### Core API
+
+为了提供概要支持REST框架使用`Core API`。
+
+Core API是用于描述API的文档规范。它用于提供可用路径的内部表示形式和API公开的可能的交互。它可以用于服务器端或客户端。
+
+当使用服务器端时，coreAPI允许API支持呈现范围广泛的概要或超媒体格式。
+
+当使用客户端时，核心API允许动态驱动的客户端库，它可以与任何公开受支持的概要或超媒体格式的API交互。
+
+
+### 添加概要
+
+REST框架支持明确定义的概要视图或自动生成的概要。由于我们使用的是视图集和路由器，我们可以简单地使用自动概要生成。
+
+你需要安装`coreapi` python包才能包含API概要
+
+通过再URL配置上包括一个自动生成概要视图来为API添加概要
+
+```python
+from rest_framework.schemas import get_schema_view
+
+schema_view = get_schema_view(title='Pastebin API')
+
+urlpatterns = [
+    url('^schema/$', schema_view),
+    ...
+]
+```
 
 ---
