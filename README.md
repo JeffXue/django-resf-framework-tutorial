@@ -761,6 +761,125 @@ http -a tom:password123 POST http://127.0.0.1:8000/snippets/ code="print 789"
 ---
 
 ## relationships and hyperlinked apis：关联与超链接API
+通过使用hyperlinked来提供api的内部联系
+
+### 为API创建一个根路径
+现在有snippets和users路径，api没有一个入口点，使用一个常规的基于函数的视图和`@api_view`装饰器创建
+
+`snippets/views.py`
+```python
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework.reverse import reverse
+
+
+@api_view(['GET'])
+def api_root(request, format=None):
+    return Response({
+        'users': reverse('user-list', request=request, format=format),
+        'snippets': reverse('snippet-list', request=request, format=format)
+    })
+```
+`reverse`返回完全限定的URL，URL模式是通过名称来标识的
+
+### 为高亮显示代码片段创建路径
+api中缺少代码高亮显示路径，REST框架提供了两种HTML渲染，一种使用模板渲染的HTML，另一种预渲染的HTML
+
+使用基类来标识实例，并创建自己的`.get()`方法
+
+`snippets/views.py`
+```python
+from rest_framework import renderers
+from rest_framework.response import Response
+
+class SnippetHighlight(generics.GenericAPIView):
+    queryset = Snippet.objects.all()
+    renderer_classes = (renderers.StaticHTMLRenderer,)
+
+    def get(self, request, *args, **kwargs):
+        snippet = self.get_object()
+        return Response(snippet.highlighted)
+```
+
+`snippets/urls`添加url模式
+```python
+url(r'^$', views.api_root),
+url(r'^snippets/(?P<pk>[0-9]+)/highlight/$', views.SnippetHighlight.as_view()),
+```
+
+### 超链接API
+
+处理好实体之间的关系是api设计中更具挑战性的方面，可以选择几种不同的方式来代表一种关系
+- 使用主键
+- 实体之间使用超链接
+- 在相关实体上使用唯一的标识字段
+- 使用相关实体的默认字符串表示形式
+- 将相关实体嵌套在父表示中
+- 一些其他自定义表示
+
+REST框架支持所有这些方式，并且可以将它们应用于正向或反向关系，也可以在诸如通用外键之类的自定义管理器上应用。
+
+在这种情况下，希望在实体之间使用超链接方式。这样的话，需要修改序列化程序来扩展`HyperlinkedModelSerializer`而不是现有的`ModelSerializer`。
+
+`HyperlinkedModelSerializer`与`ModelSerializer`有以下区别：
+- 默认情况下不包括`id`字段。
+- 它包含一个`url`字段，使用`HyperlinkedIdentityField`。
+- 关联关系使用`HyperlinkedRelatedField`，而不是`PrimaryKeyRelatedField`。
+
+可以轻松地重写我们现有的序列化程序以使用超链接。在你的`snippets/serializers.py`中添加
+```python
+class SnippetSerializer(serializers.HyperlinkedModelSerializer):
+    owner = serializers.ReadOnlyField(source='owner.username')
+    highlight = serializers.HyperlinkedIdentityField(view_name='snippet-highlight', format='html')
+
+    class Meta:
+        model = Snippet
+        fields = ('url', 'id', 'highlight', 'owner',
+                  'title', 'code', 'linenos', 'language', 'style')
+
+
+class UserSerializer(serializers.HyperlinkedModelSerializer):
+    snippets = serializers.HyperlinkedRelatedField(many=True, view_name='snippet-detail', read_only=True)
+
+    class Meta:
+        model = User
+        fields = ('url', 'id', 'username', 'snippets')
+```
+`highlight`字段与`url`字段的类型相同，不同之处在于指向`snippet-highlight`url模式，而不是`snippet-detail`url模式
+
+### 为URL模式命名
+`snippets/urls.py`
+```python
+from django.conf.urls import url, include
+from rest_framework.urlpatterns import format_suffix_patterns
+from snippets import views
+
+# API endpoints
+urlpatterns = format_suffix_patterns([
+    url(r'^$', views.api_root),
+    url(r'^snippets/$',
+        views.SnippetList.as_view(),
+        name='snippet-list'),
+    url(r'^snippets/(?P<pk>[0-9]+)/$',
+        views.SnippetDetail.as_view(),
+        name='snippet-detail'),
+    url(r'^snippets/(?P<pk>[0-9]+)/highlight/$',
+        views.SnippetHighlight.as_view(),
+        name='snippet-highlight'),
+    url(r'^users/$',
+        views.UserList.as_view(),
+        name='user-list'),
+    url(r'^users/(?P<pk>[0-9]+)/$',
+        views.UserDetail.as_view(),
+        name='user-detail')
+])
+
+# 可浏览API的登录和注销视图
+urlpatterns += [
+    url(r'^api-auth/', include('rest_framework.urls',
+                               namespace='rest_framework')),
+]
+```
 
 ---
 
